@@ -75,9 +75,9 @@ public:
         uv_cond_wait(&mCond, &mutex->mMutex);
     }
 
-    void waitUntil(Mutex* mutex, uint64_t timeout)
+    int waitUntil(Mutex* mutex, uint64_t timeout)
     {
-        uv_cond_timedwait(&mCond, &mutex->mMutex, timeout);
+        return uv_cond_timedwait(&mCond, &mutex->mMutex, timeout);
     }
 
     void signal()
@@ -130,6 +130,62 @@ public:
 
 private:
     Mutex mMutex;
+    std::queue<T> mContainer;
+};
+
+template<typename T>
+class WaitQueue
+{
+public:
+    WaitQueue()
+    {
+    }
+
+    ~WaitQueue()
+    {
+    }
+
+    void push(T&& t)
+    {
+        MutexLocker locker(&mMutex);
+        mContainer.push(std::forward<T>(t));
+        // assume only one consumer
+        mCondition.signal();
+    }
+
+    T wait()
+    {
+        MutexLocker locker(&mMutex);
+        while (mContainer.empty()) {
+            mCondition.wait(&mMutex);
+        }
+        const T t = std::move(mContainer.back());
+        mContainer.pop();
+        return t;
+    }
+
+    T waitUntil(uint64_t timeout, bool* ok = nullptr)
+    {
+        MutexLocker locker(&mMutex);
+        if (mContainer.empty()) {
+            mCondition.waitUntil(&mMutex, timeout);
+        }
+        if (mContainer.empty()) {
+            // assume timeout
+            if (ok)
+                *ok = false;
+            return T();
+        }
+        if (ok)
+            *ok = true;
+        const T t = std::move(mContainer.back());
+        mContainer.pop();
+        return t;
+    }
+
+private:
+    Mutex mMutex;
+    Condition mCondition;
     std::queue<T> mContainer;
 };
 
