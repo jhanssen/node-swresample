@@ -118,7 +118,7 @@ public:
         if (!mContainer.empty()) {
             if (ok)
                 *ok = true;
-            const T t = std::move(mContainer.back());
+            const T t = std::move(mContainer.front());
             mContainer.pop();
             return t;
         } else {
@@ -159,7 +159,7 @@ public:
         while (mContainer.empty()) {
             mCondition.wait(&mMutex);
         }
-        const T t = std::move(mContainer.back());
+        const T t = std::move(mContainer.front());
         mContainer.pop();
         return t;
     }
@@ -178,7 +178,7 @@ public:
         }
         if (ok)
             *ok = true;
-        const T t = std::move(mContainer.back());
+        const T t = std::move(mContainer.front());
         mContainer.pop();
         return t;
     }

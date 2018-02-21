@@ -26,7 +26,7 @@ struct Resample : public Nan::ObjectWrap
     };
 
     struct Data {
-        enum Type { Samples, Error, Stop, SrcFmt, DstFmt } type;
+        enum Type { Samples, Error, Stop, SrcFmt, DstFmt, End } type;
 
         uint8_t* data;
         size_t size;
@@ -80,12 +80,23 @@ void Resample::open()
                     break; }
                 case Data::Samples: {
                     // don't free data here, buffer takes ownership
+                    Nan::HandleScope scope;
                     v8::Local<v8::Value> value = Nan::NewBuffer(reinterpret_cast<char*>(data.data), data.size).ToLocalChecked();
 
                     const auto& o = r->ons["samples"];
                     for (const auto& cb : o) {
                         if (!cb->IsEmpty()) {
                             cb->Call(1, &value);
+                        }
+                    }
+
+                    break; }
+                case Data::End: {
+                    Nan::HandleScope scope;
+                    const auto& o = r->ons["end"];
+                    for (const auto& cb : o) {
+                        if (!cb->IsEmpty()) {
+                            cb->Call(0, nullptr);
                         }
                     }
 
@@ -224,11 +235,12 @@ void Resample::run(void* arg)
         case Data::Samples: {
             if (!state.swr) {
                 // nothing to do
+                free(data.data);
                 break;
             }
             int ret;
             // number of samples = bytes / channels / (bps / 8)
-            const int srcsamples = data.size / state.srcchannels / bitsPerSample(srcfmt.format);
+            const int srcsamples = data.size / state.srcchannels / (bitsPerSample(srcfmt.format) / 8);
             const int dstsamples = av_rescale_rnd(swr_get_delay(state.swr, srcfmt.rate) + srcsamples,
                                                   dstfmt.rate, srcfmt.rate, AV_ROUND_UP);
             if (dstsamples > state.maxdstsamples) {
@@ -237,6 +249,7 @@ void Resample::run(void* arg)
                                        dstsamples, dstfmt.format, 1);
                 if (ret < 0) {
                     r->throwError("Unable to resize destination sample data");
+                    free(data.data);
                     reset();
                     break;
                 }
@@ -245,10 +258,15 @@ void Resample::run(void* arg)
             }
 
             ret = swr_convert(state.swr, state.dstdata, dstsamples, (const uint8_t**)&data.data, srcsamples);
-            free(data.data);
             if (ret < 0) {
                 r->throwError("Unable to convert samples");
+                free(data.data);
                 reset();
+                break;
+            }
+            if (!ret) {
+                // ???
+                free(data.data);
                 break;
             }
 
@@ -259,7 +277,13 @@ void Resample::run(void* arg)
             r->output.push({ Data::Samples, ptr, dstsize, {} });
             uv_async_send(&r->async);
 
+            free(data.data);
+
             break; }
+        case Data::End:
+            r->output.push({ Data::End, nullptr, 0, {} });
+            uv_async_send(&r->async);
+            break;
         }
     }
 }
@@ -370,8 +394,14 @@ NAN_METHOD(feed) {
         Nan::ThrowError("Need a buffer for format");
         return;
     }
+    size_t length = 0;
+    if (info.Length() >= 3 && info[2]->IsUint32()) {
+        // got a length
+        length = v8::Local<v8::Uint32>::Cast(info[2])->Value();
+    }
     const char* data = node::Buffer::Data(info[1]);
-    const size_t length = node::Buffer::Length(info[1]);
+    if (!length)
+        length = node::Buffer::Length(info[1]);
     if (!length)
         return;
 
@@ -382,6 +412,15 @@ NAN_METHOD(feed) {
 
     Resample* resample = Resample::Unwrap<Resample>(v8::Local<v8::Object>::Cast(info[0]));
     resample->input.push({ Resample::Data::Samples, ptr, length, {} });
+}
+
+NAN_METHOD(end) {
+    if (info.Length() < 1 || !info[0]->IsObject()) {
+        Nan::ThrowError("Need an external for format");
+        return;
+    }
+    Resample* resample = Resample::Unwrap<Resample>(v8::Local<v8::Object>::Cast(info[0]));
+    resample->input.push({ Resample::Data::End, nullptr, 0, {} });
 }
 
 NAN_METHOD(on) {
@@ -407,6 +446,7 @@ NAN_MODULE_INIT(Initialize) {
     NAN_EXPORT(target, setSourceFormat);
     NAN_EXPORT(target, setDestinationFormat);
     NAN_EXPORT(target, feed);
+    NAN_EXPORT(target, end);
     NAN_EXPORT(target, on);
 }
 
