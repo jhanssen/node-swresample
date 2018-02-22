@@ -3,7 +3,43 @@
 const { Transform } = require("stream");
 const SwResample = require("bindings")("swresample.node");
 
-class Resample extends Transform {
+class Resample {
+    constructor() {
+        this._resample = SwResample.create();
+    }
+
+    open() {
+        SwResample.open(this._resample);
+    }
+
+    close() {
+        SwResample.close(this._resample);
+    }
+
+    setSourceFormat(fmt) {
+        SwResample.setSourceFormat(this._resample, fmt);
+    }
+
+    setDestinationFormat(fmt) {
+        SwResample.setDestinationFormat(this._resample, fmt);
+    }
+
+    on(name, cb) {
+        SwResample.on(this._resample, name, cb);
+    }
+
+    // index is an id, it'll be passed back in the data 'on' callback.
+    // length is optional
+    feed(index, buf, length) {
+        SwResample.feed(this._resample, buf, length);
+    }
+
+    end() {
+        SwResample.end(this._resample);
+    }
+}
+
+class ResampleStream extends Transform {
     constructor(options) {
         super(options);
 
@@ -91,4 +127,4 @@ class Resample extends Transform {
     }
 }
 
-module.exports = Resample;
+module.exports = { Resample, ResampleStream };

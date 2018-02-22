@@ -1,9 +1,9 @@
 /*global require*/
-const Resample = require("..");
+const { ResampleStream } = require("..");
 
 const fs = require("fs");
 const rs = fs.createReadStream("testin.wav");
-const tr = new Resample({
+const tr = new ResampleStream({
     sourceFormat: { format: "s16", rate: 44100, channels: 2 },
     destinationFormat: { format: "s16", rate: 8000, channels: 1 }
 });
