@@ -30,32 +30,36 @@ struct Resample : public Nan::ObjectWrap
 
         uint8_t* data;
         size_t size;
+        uint64_t idx;
 
         Format fmt;
     };
     WaitQueue<Data> input;
     Queue<Data> output;
+    bool opened;
 
     v8::Local<v8::Object> makeObject();
     void open();
+    void close();
     void throwError(const char* msg);
     static void run(void* arg);
 };
 
 Resample::Resample()
+    : opened(false)
 {
     async.data = this;
 }
 
 Resample::~Resample()
 {
-    input.push(Data{ Data::Stop, nullptr, 0, {} });
-    uv_thread_join(&thread);
-    uv_close(reinterpret_cast<uv_handle_t*>(&async), nullptr);
+    if (opened)
+        close();
 }
 
 void Resample::open()
 {
+    opened = true;
     uv_async_init(uv_default_loop(), &async, [](uv_async_t* async) {
             Resample* r = static_cast<Resample*>(async->data);
             bool ok;
@@ -81,12 +85,14 @@ void Resample::open()
                 case Data::Samples: {
                     // don't free data here, buffer takes ownership
                     Nan::HandleScope scope;
-                    v8::Local<v8::Value> value = Nan::NewBuffer(reinterpret_cast<char*>(data.data), data.size).ToLocalChecked();
+                    std::vector<v8::Local<v8::Value> > values;
+                    values.push_back(Nan::NewBuffer(reinterpret_cast<char*>(data.data), data.size).ToLocalChecked());
+                    values.push_back(Nan::New<v8::Number>(static_cast<double>(data.idx)));
 
                     const auto& o = r->ons["samples"];
                     for (const auto& cb : o) {
                         if (!cb->IsEmpty()) {
-                            cb->Call(1, &value);
+                            cb->Call(values.size(), &values[0]);
                         }
                     }
 
@@ -112,9 +118,17 @@ void Resample::open()
     uv_thread_create(&thread, run, this);
 }
 
+void Resample::close()
+{
+    input.push(Data{ Data::Stop, nullptr, 0, 0, {} });
+    uv_thread_join(&thread);
+    uv_close(reinterpret_cast<uv_handle_t*>(&async), nullptr);
+    opened = false;
+}
+
 void Resample::throwError(const char* msg)
 {
-    output.push(Data{ Data::Error, reinterpret_cast<uint8_t*>(strdup(msg)), strlen(msg), {} });
+    output.push(Data{ Data::Error, reinterpret_cast<uint8_t*>(strdup(msg)), strlen(msg), 0, {} });
     uv_async_send(&async);
 }
 
@@ -160,8 +174,8 @@ void Resample::run(void* arg)
         // printf("dst %ld %d %d\n", dstfmt.channels, dstfmt.rate, dstfmt.format);
         if (state.swr) {
             swr_free(&state.swr);
-            av_freep(state.dstdata[0]);
-            av_freep(state.dstdata);
+            av_free(state.dstdata[0]);
+            av_free(state.dstdata);
         }
         state.swr = swr_alloc();
         av_opt_set_int(state.swr, "in_channel_layout", srcfmt.channels, 0);
@@ -202,8 +216,8 @@ void Resample::run(void* arg)
     auto reset = [&state]() {
         if (state.swr) {
             swr_free(&state.swr);
-            av_freep(state.dstdata[0]);
-            av_freep(state.dstdata);
+            av_free(state.dstdata[0]);
+            av_free(state.dstdata);
             state.swr = nullptr;
         }
     };
@@ -274,14 +288,14 @@ void Resample::run(void* arg)
             // copy data to a new Data and send to JS
             uint8_t* ptr = reinterpret_cast<uint8_t*>(malloc(dstsize));
             memcpy(ptr, state.dstdata[0], dstsize);
-            r->output.push({ Data::Samples, ptr, dstsize, {} });
+            r->output.push({ Data::Samples, ptr, dstsize, data.idx, {} });
             uv_async_send(&r->async);
 
             free(data.data);
 
             break; }
         case Data::End:
-            r->output.push({ Data::End, nullptr, 0, {} });
+            r->output.push({ Data::End, nullptr, 0, 0, {} });
             uv_async_send(&r->async);
             break;
         }
@@ -301,8 +315,25 @@ v8::Local<v8::Object> Resample::makeObject()
 
 NAN_METHOD(create) {
     Resample* resample = new Resample;
-    resample->open();
     info.GetReturnValue().Set(resample->makeObject());
+}
+
+NAN_METHOD(open) {
+    if (info.Length() < 1 || !info[0]->IsObject()) {
+        Nan::ThrowError("Need an external for format");
+        return;
+    }
+    Resample* resample = Resample::Unwrap<Resample>(v8::Local<v8::Object>::Cast(info[0]));
+    resample->open();
+}
+
+NAN_METHOD(close) {
+    if (info.Length() < 1 || !info[0]->IsObject()) {
+        Nan::ThrowError("Need an external for format");
+        return;
+    }
+    Resample* resample = Resample::Unwrap<Resample>(v8::Local<v8::Object>::Cast(info[0]));
+    resample->close();
 }
 
 static Resample::Format makeFormat(v8::Local<v8::Object> obj)
@@ -364,7 +395,7 @@ NAN_METHOD(setSourceFormat) {
         Nan::ThrowError("Unable to make format");
         return;
     }
-    resample->input.push({ Resample::Data::SrcFmt, nullptr, 0, std::move(fmt) });
+    resample->input.push({ Resample::Data::SrcFmt, nullptr, 0, 0, std::move(fmt) });
 }
 
 NAN_METHOD(setDestinationFormat) {
@@ -382,28 +413,34 @@ NAN_METHOD(setDestinationFormat) {
         Nan::ThrowError("Unable to make format");
         return;
     }
-    resample->input.push({ Resample::Data::DstFmt, nullptr, 0, std::move(fmt) });
+    resample->input.push({ Resample::Data::DstFmt, nullptr, 0, 0, std::move(fmt) });
 }
 
 NAN_METHOD(feed) {
     if (info.Length() < 1 || !info[0]->IsObject()) {
-        Nan::ThrowError("Need an external for format");
+        Nan::ThrowError("Need an external for feed");
         return;
     }
-    if (info.Length() < 2 || !node::Buffer::HasInstance(info[1])) {
-        Nan::ThrowError("Need a buffer for format");
+    if (info.Length() < 2 || !info[1]->IsNumber()) {
+        Nan::ThrowError("Need an index for feed");
+        return;
+    }
+    if (info.Length() < 3 || !node::Buffer::HasInstance(info[2])) {
+        Nan::ThrowError("Need a buffer for feed");
         return;
     }
     size_t length = 0;
-    if (info.Length() >= 3 && info[2]->IsUint32()) {
+    if (info.Length() >= 4 && info[3]->IsUint32()) {
         // got a length
-        length = v8::Local<v8::Uint32>::Cast(info[2])->Value();
+        length = v8::Local<v8::Uint32>::Cast(info[3])->Value();
     }
-    const char* data = node::Buffer::Data(info[1]);
+    const char* data = node::Buffer::Data(info[2]);
     if (!length)
-        length = node::Buffer::Length(info[1]);
+        length = node::Buffer::Length(info[2]);
     if (!length)
         return;
+
+    const uint64_t idx = static_cast<uint64_t>(v8::Local<v8::Number>::Cast(info[1])->Value());
 
     // copy? could keep a persistent to the buffer and just pass the pointer
     // but then the caller would have to promise not to change the buffer in JS
@@ -411,7 +448,7 @@ NAN_METHOD(feed) {
     memcpy(ptr, data, length);
 
     Resample* resample = Resample::Unwrap<Resample>(v8::Local<v8::Object>::Cast(info[0]));
-    resample->input.push({ Resample::Data::Samples, ptr, length, {} });
+    resample->input.push({ Resample::Data::Samples, ptr, length, idx, {} });
 }
 
 NAN_METHOD(end) {
@@ -420,7 +457,7 @@ NAN_METHOD(end) {
         return;
     }
     Resample* resample = Resample::Unwrap<Resample>(v8::Local<v8::Object>::Cast(info[0]));
-    resample->input.push({ Resample::Data::End, nullptr, 0, {} });
+    resample->input.push({ Resample::Data::End, nullptr, 0, 0, {} });
 }
 
 NAN_METHOD(on) {
@@ -443,6 +480,8 @@ NAN_METHOD(on) {
 
 NAN_MODULE_INIT(Initialize) {
     NAN_EXPORT(target, create);
+    NAN_EXPORT(target, open);
+    NAN_EXPORT(target, close);
     NAN_EXPORT(target, setSourceFormat);
     NAN_EXPORT(target, setDestinationFormat);
     NAN_EXPORT(target, feed);
