@@ -222,7 +222,7 @@ void Resample::run(void* arg)
         }
     };
 
-    int lastsrcsamples = 1024;
+    int lastsrcsamples = 1024, bytespersample;
     for (;;) {
         Data data = r->input.wait();
         switch (data.type) {
@@ -237,6 +237,7 @@ void Resample::run(void* arg)
             }
             srcfmt = data.fmt;
             recreate(lastsrcsamples);
+            bytespersample = bitsPerSample(srcfmt.format) / 8;
             break;
         case Data::DstFmt:
             if (!bitsPerSample(data.fmt.format)) {
@@ -254,7 +255,7 @@ void Resample::run(void* arg)
             }
             int ret;
             // number of samples = bytes / channels / (bps / 8)
-            const int srcsamples = data.size / state.srcchannels / (bitsPerSample(srcfmt.format) / 8);
+            const int srcsamples = data.size / state.srcchannels / bytespersample;
             const int dstsamples = av_rescale_rnd(swr_get_delay(state.swr, srcfmt.rate) + srcsamples,
                                                   dstfmt.rate, srcfmt.rate, AV_ROUND_UP);
             if (dstsamples > state.maxdstsamples) {
