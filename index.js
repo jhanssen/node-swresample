@@ -40,7 +40,9 @@ class Resample extends Transform {
                 this._flushCallback = undefined;
             }
             this._opened = false;
-            SwResample.close(this._resample);
+            process.nextTick(() => {
+                SwResample.close(this._resample);
+            });
         });
         SwResample.on(this._resample, "error", err => {
             console.error(err.message);
