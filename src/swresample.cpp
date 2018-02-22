@@ -222,7 +222,7 @@ void Resample::run(void* arg)
         }
     };
 
-    int lastsrcsamples = 1024, bytespersample;
+    int lastsrcsamples = 1024, bytespersample = 0;
     for (;;) {
         Data data = r->input.wait();
         switch (data.type) {
