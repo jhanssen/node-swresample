@@ -1,7 +1,7 @@
 {
   "name": "swresample",
   "version": "1.0.0",
-  "description": "Node module for libswresample",
+  "description": "Node bindings for libswresample",
   "main": "index.js",
   "scripts": {
     "build": "node-gyp rebuild",
