@@ -16,6 +16,7 @@ class Resample extends Transform {
 
         this._index = 0;
         this._callbacks = new Map();
+        this._opened = true;
 
         if (options.sourceFormat) {
             this._sourceFormat = options.sourceFormat;
@@ -38,6 +39,7 @@ class Resample extends Transform {
                 this._flushCallback();
                 this._flushCallback = undefined;
             }
+            this._opened = false;
             SwResample.close(this._resample);
         });
         SwResample.on(this._resample, "error", err => {
@@ -45,6 +47,10 @@ class Resample extends Transform {
         });
 
         this.on("pipe", src => {
+            if (!this._opened) {
+                SwResample.open(this._resample);
+                this._opened = true;
+            }
             src.on("format", this._sourceFormatChanged);
         });
         this.on("unpipe", src => {
